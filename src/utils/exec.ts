@@ -1,42 +1,30 @@
 import {exec as processExec} from "child_process";
 
 
-const exec = async (command: string) => {
+export const exec = async (command: string): Promise<string> => {
+    const worker = processExec(command, {
+        maxBuffer: Infinity
+    });
+
     return new Promise((resolve, reject) => {
-        const worker = processExec(command, {
-            maxBuffer: Infinity
-        }, (err, stdout, stderr) => {
-            if(err) {
-                return reject(err);
+        let data = "";
+
+        worker.stdout.on("data", (chunk) => {
+            data += chunk.toString();
+        });
+
+        worker.on("exit", (code) => {
+            if(code !== 0) {
+                reject(new Error(`Process exited with code ${code}`));
+
+                return;
             }
 
-            return resolve({
-                stdout,
-                stderr
-            });
+            resolve(data);
         });
 
-        if(worker.stdout) {
-            worker.stdout.on("data", (data) => {
-                process.stdout.write(data);
-            });
-        }
-
-        if(worker.stderr) {
-            worker.stderr.on("data", (data) => {
-                process.stderr.write(data);
-            });
-        }
-
-        worker.on("close", (code: string) => {
-            // Logger.info("close", chalk.red(code));
-        });
-
-        worker.on("exit", (code: string) => {
-            // Logger.info("exit", chalk.red(code));
+        worker.on("error", (err) => {
+            reject(err);
         });
     });
 };
-
-
-export {exec};
