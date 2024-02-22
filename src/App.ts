@@ -1,13 +1,14 @@
 import {promises as FS, existsSync} from "fs";
-import * as OS from "os";
 import {Cli} from "@kearisp/cli";
 import * as Docker from "dockerode";
 
 import {DATA_DIR, CONFIG_PATH} from "./env";
+import {Crontab} from "./makes/Crontab";
 import {Job} from "./makes/Job";
+import {Logger} from "./makes/Logger";
 import {Watcher} from "./makes/Watcher";
 import {exec} from "./utils/exec";
-import {spawn} from "./utils/spawn";
+import {demuxOutput} from "./utils/demuxOutput";
 
 
 type SetOptions = {};
@@ -51,14 +52,16 @@ export class App {
     }
 
     protected async process() {
-        // exec("cron -f").then(() => {
-        //     console.log(">_<");
-        // }).catch((err) => {
-        //     console.log(err.message);
-        // });
+        const abortController = new AbortController();
+
+        // console.log(process.env.WS_DIR, DATA_DIR);
+        console.log(DATA_DIR);
+
+        process.on("exit", () => {
+            abortController.abort();
+        });
 
         const stream = await this.docker.getEvents({
-            since: Math.floor(1707684645107 / 1000),
             filters: JSON.stringify({
                 event: ["start", "stop"]
             })
@@ -99,17 +102,21 @@ export class App {
     }
 
     protected async exec(options: ExecOptions, args: string[]) {
-        const {container: name} = options;
+        const {
+            container: name
+        } = options;
 
         if(!name) {
+            const res = await exec(args.join(" "));
+            const data = res.toString()
+                .replace(/\n$/, "")
+                .split(/\n/);
+
+            for(const line of data) {
+                Logger.log(`cron:${name}`, line);
+            }
             return;
         }
-
-        args = args.map((arg) => {
-            return arg.replace(/\\\$/, "$");
-        });
-
-        console.log(name, args);
 
         const container = this.docker.getContainer(name);
 
@@ -117,17 +124,29 @@ export class App {
             return;
         }
 
-        const exec = await container.exec({
+        args = args.map((arg) => {
+            return arg.replace(/\\\$/, "$");
+        });
+
+        const containerExec = await container.exec({
             Cmd: args,
             AttachStdout: true,
             AttachStderr: true
         });
 
-        const stream = await exec.start({
+        const stream = await containerExec.start({
             Tty: false
         });
 
-        container.modem.demuxStream(stream, process.stdout, process.stderr);
+        stream.on("data", (chunk) => {
+            const data = demuxOutput(chunk).toString().replace(/\n$/, "").split(/\n/);
+
+            for(const line of data) {
+                Logger.log(`cron:${name}`, line);
+            }
+
+            // Logger.log(`cron:${name}`, demuxOutput(chunk).toString());
+        });
     }
 
     protected async getConfig() {
@@ -159,7 +178,11 @@ export class App {
         const data = await this.getConfig();
         const containers = await this.docker.listContainers();
 
-        let crontab = "";
+        const crontab = Crontab.fromString(await exec("crontab -l").catch(() => ""));
+
+        crontab.filter((job) => {
+            return !/ws-cron/.test(job.command);
+        });
 
         for(const name in data) {
             const container = containers.find((container) => {
@@ -170,61 +193,79 @@ export class App {
                 continue;
             }
 
-            crontab += (data[name] as string).split(/\r?\n/).filter((job) => {
-                return !!job;
-            }).map((cron: string) => {
-                const job = Job.fromString(cron);
+            const containerCrontab = Crontab.fromString(data[name]);
+
+            containerCrontab.jobs = containerCrontab.jobs.map((job) => {
                 const command = job.command.replace(/\$/, "\\$");
 
-                job.command = `$(bash -i which node) $(bash -i which ws-cron) exec -c=${name} ${command} >> /var/log/cron.log 2>> /var/log/cron.log`;
+                job.command = `ws-cron exec -c=${name} ${command}`;
 
-                return job.toString();
-            }).join(OS.EOL);
+                return job;
+            });
+
+            crontab.push(...containerCrontab.jobs);
         }
 
-        await FS.writeFile("./crontab.txt", crontab + OS.EOL);
+        if(crontab.jobs.length === 0) {
+            crontab.push(Job.fromString("* * * * * ws-cron exec echo \"No jobs\""));
+        }
+
+        await FS.writeFile("./crontab.txt", crontab.toString());
         await exec("crontab ./crontab.txt");
         await FS.rm("./crontab.txt");
     }
 
-    protected async updateCrontabV2() {
-        // const containers = await this.docker.listContainers();
-
-        let crontab = await exec("crontab -l");
-        let jobs = crontab.split(/\r?\n/).filter((job) => {
-            return !!job;
-        }).map((job) => {
-            return Job.fromString(job);
-        }).filter((job) => {
-            return !/ws-cron/.test(job.command);
-        });
-
-        // const config = await this.getConfig();
-        //
-        // for(const name in config) {
-        //     const containerJobs = config[name].split(/\r?\n/).filter((job: string) => !!job).map((job: string) => {
-        //         return Job.fromString(job);
-        //     });
-        //
-        //     console.log(name, containerJobs);
-        // }
-
-        console.log(jobs.map(job => job.command));
-    }
-
     protected async startJobs(name: string) {
-        let crontab = await exec("crontab -l");
-        let jobs = crontab.split(/\r?\n/).filter((job) => !!job).map((job) => {
-            return Job.fromString(job);
+        const {
+            [name]: containerCrontab = ""
+        } = await this.getConfig();
+
+        const crontab = Crontab.fromString(await exec("crontab -l").catch(() => ""));
+
+        crontab.filter((job) => {
+            return /^\* \* \* \* \* ws-cron exec echo "[^"]+"$/.test(job.command);
         }).filter((job) => {
-            return !new RegExp(`-c=${name}`).test(job.command);
+            return !new RegExp(`ws-cron exec -c=${name}`).test(job.command);
         });
 
-        console.log(jobs);
+        const cc = Crontab.fromString(containerCrontab);
+
+        cc.jobs.map((job) => {
+            const command = job.command.replace(/\$/, "\\$");
+
+            job.command = `ws-cron exec -c=${name} ${command} `;
+
+            return job;
+        });
+
+        crontab.jobs.push(...cc.jobs);
+
+        if(crontab.jobs.length === 0) {
+            crontab.push(Job.fromString("* * * * * ws-cron exec echo \"No jobs\""));
+        }
+
+        await FS.writeFile("./crontab.txt", crontab.toString());
+        await exec("crontab ./crontab.txt");
+        await FS.rm("./crontab.txt");
     }
 
     protected async stopJobs(name: string) {
+        try {
+            const cron = Crontab.fromString(await exec("crontab -l"));
 
+            cron.filter((job) => !new RegExp(`-c=${name}`).test(job.command));
+
+            if(cron.jobs.length === 0) {
+                cron.push(Job.fromString("* * * * * ws-cron exec echo \"No jobs\""));
+            }
+
+            await FS.writeFile("./crontab.txt", cron.toString());
+            await exec("crontab ./crontab.txt");
+            await FS.rm("./crontab.txt");
+        }
+        catch(err) {
+            console.error(err);
+        }
     }
 
     public async run(args: string[]) {
