@@ -33,5 +33,4 @@ ws-cron exec -c=<container> <...args>
 $ ws-cron set test-container "* * * * * bash -c 'echo \"Test\"'\r\n"
 $ crontab -l
 * * * * * ws-cron exec -c=test-container bash -c 'echo \"Test\"'
-  
 ```
