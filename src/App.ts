@@ -33,6 +33,9 @@ export class App {
         this.cli.command("process")
             .action(() => this.process());
 
+        this.cli.command("update")
+            .action(() => this.update());
+
         this.cli.command("set <container> <crontab>")
             .action((options, container, crontab) => this.set(options, container as string, crontab as string));
 
@@ -52,14 +55,9 @@ export class App {
     }
 
     protected async process() {
+        await this.update();
+
         const abortController = new AbortController();
-
-        // console.log(process.env.WS_DIR, DATA_DIR);
-        console.log(DATA_DIR);
-
-        process.on("exit", () => {
-            abortController.abort();
-        });
 
         const stream = await this.docker.getEvents({
             filters: JSON.stringify({
@@ -85,96 +83,14 @@ export class App {
             else if(action === "stop") {
                 await this.stopJobs(name);
             }
+        });
 
-            // await this.updateCrontabV2();
+        process.on("exit", () => {
+            abortController.abort();
         });
     }
 
-    protected async set(options: SetOptions, container: string, crontab: string) {
-        const data = await this.getConfig();
-
-        data[container] = crontab;
-
-        await this.setConfig(data);
-        await this.updateCrontab();
-
-        return "";
-    }
-
-    protected async exec(options: ExecOptions, args: string[]) {
-        const {
-            container: name
-        } = options;
-
-        if(!name) {
-            const res = await exec(args.join(" "));
-            const data = res.toString()
-                .replace(/\n$/, "")
-                .split(/\n/);
-
-            for(const line of data) {
-                Logger.log(`cron:${name}`, line);
-            }
-            return;
-        }
-
-        const container = this.docker.getContainer(name);
-
-        if(!container) {
-            return;
-        }
-
-        args = args.map((arg) => {
-            return arg.replace(/\\\$/, "$");
-        });
-
-        const containerExec = await container.exec({
-            Cmd: args,
-            AttachStdout: true,
-            AttachStderr: true
-        });
-
-        const stream = await containerExec.start({
-            Tty: false
-        });
-
-        stream.on("data", (chunk) => {
-            const data = demuxOutput(chunk).toString().replace(/\n$/, "").split(/\n/);
-
-            for(const line of data) {
-                Logger.log(`cron:${name}`, line);
-            }
-
-            // Logger.log(`cron:${name}`, demuxOutput(chunk).toString());
-        });
-    }
-
-    protected async getConfig() {
-        if(!existsSync(CONFIG_PATH)) {
-            return {};
-        }
-
-        try {
-            const data = await FS.readFile(CONFIG_PATH);
-
-            return JSON.parse(data.toString());
-        }
-        catch(err) {
-            return {};
-        }
-    }
-
-    protected async setConfig(data: any) {
-        if(!existsSync(DATA_DIR)) {
-            await FS.mkdir(DATA_DIR, {
-                recursive: true
-            });
-        }
-
-        await FS.writeFile(CONFIG_PATH, JSON.stringify(data, null, 4));
-    }
-
-    protected async updateCrontab() {
+    protected async update() {
         const data = await this.getConfig();
         const containers = await this.docker.listContainers();
 
@@ -213,6 +129,88 @@ export class App {
         await FS.writeFile("./crontab.txt", crontab.toString());
         await exec("crontab ./crontab.txt");
         await FS.rm("./crontab.txt");
+    }
+
+    protected async set(options: SetOptions, container: string, crontab: string) {
+        const data = await this.getConfig();
+
+        data[container] = crontab;
+
+        await this.setConfig(data);
+        await this.update();
+
+        return "";
+    }
+
+    protected async exec(options: ExecOptions, args: string[]) {
+        const {
+            container: name
+        } = options;
+
+        if(!name) {
+            const res = await exec(args.join(" "));
+            const data = res.toString()
+                .replace(/\n$/, "")
+                .split(/\n/);
+
+            for(const line of data) {
+                Logger.log(`cron`, line);
+            }
+            return;
+        }
+
+        const container = this.docker.getContainer(name);
+
+        if(!container) {
+            return;
+        }
+
+        args = args.map((arg) => {
+            return arg.replace(/\\\$/, "$");
+        });
+
+        const containerExec = await container.exec({
+            Cmd: args,
+            AttachStdout: true,
+            AttachStderr: true
+        });
+
+        const stream = await containerExec.start({
+            Tty: false
+        });
+
+        stream.on("data", (chunk) => {
+            const data = demuxOutput(chunk).toString().replace(/\n$/, "").split(/\n/);
+
+            for(const line of data) {
+                Logger.log(`cron:${name}`, line);
+            }
+        });
+    }
+
+    protected async getConfig() {
+        if(!existsSync(CONFIG_PATH)) {
+            return {};
+        }
+
+        try {
+            const data = await FS.readFile(CONFIG_PATH);
+
+            return JSON.parse(data.toString());
+        }
+        catch(err) {
+            return {};
+        }
+    }
+
+    protected async setConfig(data: any) {
+        if(!existsSync(DATA_DIR)) {
+            await FS.mkdir(DATA_DIR, {
+                recursive: true
+            });
+        }
+
+        await FS.writeFile(CONFIG_PATH, JSON.stringify(data, null, 4));
     }
 
     protected async startJobs(name: string) {
