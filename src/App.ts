@@ -1,11 +1,14 @@
 import {promises as FS, existsSync} from "fs";
-import OS from "os";
 import {Cli} from "@kearisp/cli";
 import * as Docker from "dockerode";
 
+import {DATA_DIR, CONFIG_PATH} from "./env";
+import {Crontab} from "./makes/Crontab";
 import {Job} from "./makes/Job";
+import {Logger} from "./makes/Logger";
+import {Watcher} from "./makes/Watcher";
 import {exec} from "./utils/exec";
-import {CONFIG_PATH} from "./env";
+import {demuxOutput} from "./utils/demuxOutput";
 
 
 type SetOptions = {};
@@ -24,6 +27,15 @@ export class App {
             socketPath: "/var/run/docker.sock"
         });
 
+        this.cli.command("watch")
+            .action(() => this.watch());
+
+        this.cli.command("process")
+            .action(() => this.process());
+
+        this.cli.command("update")
+            .action(() => this.update());
+
         this.cli.command("set <container> <crontab>")
             .action((options, container, crontab) => this.set(options, container as string, crontab as string));
 
@@ -36,29 +48,116 @@ export class App {
             .action((options, args) => this.exec(options, args as string[]));
     }
 
+    protected async watch() {
+        const watcher = new Watcher(__dirname);
+
+        await watcher.watch();
+    }
+
+    protected async process() {
+        await this.update();
+
+        const abortController = new AbortController();
+
+        const stream = await this.docker.getEvents({
+            filters: JSON.stringify({
+                event: ["start", "stop"]
+            })
+        });
+
+        stream.on("data", async (data) => {
+            const {
+                Action: action,
+                Actor: {
+                    Attributes: {
+                        name
+                    }
+                }
+            } = JSON.parse(data.toString());
+
+            console.log(action, name);
+
+            if(action === "start") {
+                await this.startJobs(name);
+            }
+            else if(action === "stop") {
+                await this.stopJobs(name);
+            }
+        });
+
+        process.on("exit", () => {
+            abortController.abort();
+        });
+    }
+
+    protected async update() {
+        const data = await this.getConfig();
+        const containers = await this.docker.listContainers();
+
+        const crontab = Crontab.fromString(await exec("crontab -l").catch(() => ""));
+
+        crontab.filter((job) => {
+            return !/ws-cron/.test(job.command);
+        });
+
+        for(const name in data) {
+            const container = containers.find((container) => {
+                return container.Names.includes(`/${name}`);
+            });
+
+            if(!container) {
+                continue;
+            }
+
+            const containerCrontab = Crontab.fromString(data[name]);
+
+            containerCrontab.jobs = containerCrontab.jobs.map((job) => {
+                const command = job.command.replace(/\$/, "\\$");
+
+                job.command = `ws-cron exec -c=${name} ${command}`;
+
+                return job;
+            });
+
+            crontab.push(...containerCrontab.jobs);
+        }
+
+        if(crontab.jobs.length === 0) {
+            crontab.push(Job.fromString("* * * * * ws-cron exec echo \"No jobs\""));
+        }
+
+        await FS.writeFile("./crontab.txt", crontab.toString());
+        await exec("crontab ./crontab.txt");
+        await FS.rm("./crontab.txt");
+    }
+
     protected async set(options: SetOptions, container: string, crontab: string) {
         const data = await this.getConfig();
 
         data[container] = crontab;
 
         await this.setConfig(data);
-        await this.updateCrontab();
+        await this.update();
 
         return "";
     }
 
     protected async exec(options: ExecOptions, args: string[]) {
-        const {container: name} = options;
+        const {
+            container: name
+        } = options;
 
         if(!name) {
+            const res = await exec(args.join(" "));
+            const data = res.toString()
+                .replace(/\n$/, "")
+                .split(/\n/);
+
+            for(const line of data) {
+                Logger.log(`cron`, line);
+            }
             return;
         }
-
-        args = args.map((arg) => {
-            return arg.replace(/\\\$/, "$");
-        });
-
-        console.log(name, args);
 
         const container = this.docker.getContainer(name);
 
@@ -66,17 +165,27 @@ export class App {
             return;
         }
 
-        const exec = await container.exec({
+        args = args.map((arg) => {
+            return arg.replace(/\\\$/, "$");
+        });
+
+        const containerExec = await container.exec({
             Cmd: args,
             AttachStdout: true,
             AttachStderr: true
         });
 
-        const stream = await exec.start({
+        const stream = await containerExec.start({
             Tty: false
         });
 
-        container.modem.demuxStream(stream, process.stdout, process.stderr);
+        stream.on("data", (chunk) => {
+            const data = demuxOutput(chunk).toString().replace(/\n$/, "").split(/\n/);
+
+            for(const line of data) {
+                Logger.log(`cron:${name}`, line);
+            }
+        });
     }
 
     protected async getConfig() {
@@ -95,37 +204,65 @@ export class App {
     }
 
     protected async setConfig(data: any) {
+        if(!existsSync(DATA_DIR)) {
+            await FS.mkdir(DATA_DIR, {
+                recursive: true
+            });
+        }
+
         await FS.writeFile(CONFIG_PATH, JSON.stringify(data, null, 4));
     }
 
-    protected async updateCrontab() {
-        const data = await this.getConfig();
+    protected async startJobs(name: string) {
+        const {
+            [name]: containerCrontab = ""
+        } = await this.getConfig();
 
-        let crontab = "";
+        const crontab = Crontab.fromString(await exec("crontab -l").catch(() => ""));
 
-        for(const container in data) {
-            crontab += (data[container] as string).split(/\r?\n/).filter((job) => {
-                return !!job;
-            }).map((cron: string) => {
-                const job = Job.fromString(cron);
-                const command = job.command.replace(/\$/, "\\$");
+        crontab.filter((job) => {
+            return /^\* \* \* \* \* ws-cron exec echo "[^"]+"$/.test(job.command);
+        }).filter((job) => {
+            return !new RegExp(`ws-cron exec -c=${name}`).test(job.command);
+        });
 
-                job.command = `$(bash -i which node) $(bash -i which ws-cron) exec -c=${container} ${command} >> /var/log/cron.log 2>> /var/log/cron.log`;
+        const cc = Crontab.fromString(containerCrontab);
 
-                return job.toString();
-            }).join(OS.EOL);
+        cc.jobs.map((job) => {
+            const command = job.command.replace(/\$/, "\\$");
+
+            job.command = `ws-cron exec -c=${name} ${command} `;
+
+            return job;
+        });
+
+        crontab.jobs.push(...cc.jobs);
+
+        if(crontab.jobs.length === 0) {
+            crontab.push(Job.fromString("* * * * * ws-cron exec echo \"No jobs\""));
         }
 
-        await FS.writeFile("./crontab.txt", crontab + OS.EOL);
+        await FS.writeFile("./crontab.txt", crontab.toString());
         await exec("crontab ./crontab.txt");
         await FS.rm("./crontab.txt");
     }
 
-    protected async getContainers() {
-        const containers = await this.docker.listContainers();
+    protected async stopJobs(name: string) {
+        try {
+            const cron = Crontab.fromString(await exec("crontab -l"));
 
-        for(const container of containers) {
-            console.log(container.Names);
+            cron.filter((job) => !new RegExp(`-c=${name}`).test(job.command));
+
+            if(cron.jobs.length === 0) {
+                cron.push(Job.fromString("* * * * * ws-cron exec echo \"No jobs\""));
+            }
+
+            await FS.writeFile("./crontab.txt", cron.toString());
+            await exec("crontab ./crontab.txt");
+            await FS.rm("./crontab.txt");
+        }
+        catch(err) {
+            console.error(err);
         }
     }
 

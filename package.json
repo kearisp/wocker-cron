@@ -1,6 +1,6 @@
 {
     "name": "@wocker/cron",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "author": "Kris Papercut <krispcut@gmail.com>",
     "description": "Cli tool for cron",
     "license": "MIT",
@@ -23,6 +23,7 @@
         "ws-cron": "./bin/cron.js"
     },
     "scripts": {
+        "start": "nodemon ./bin/cron.js process",
         "prepare": "npm run build",
         "watch": "tsc -w",
         "build": "tsc",
@@ -38,6 +39,7 @@
     "devDependencies": {
         "@types/dockerode": "^3.3.23",
         "@types/node": "^20.11.16",
+        "nodemon": "^3.0.3",
         "typescript": "^5.3.3"
     }
 }
