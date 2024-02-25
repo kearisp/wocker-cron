@@ -1,4 +1,7 @@
-import {promises as FS, existsSync} from "fs";
+import {existsSync} from "fs";
+import * as OS from "os";
+import * as Path from "path";
+import {FS} from "@wocker/core";
 import {Cli} from "@kearisp/cli";
 import * as Docker from "dockerode";
 
@@ -8,10 +11,13 @@ import {Job} from "./makes/Job";
 import {Logger} from "./makes/Logger";
 import {Watcher} from "./makes/Watcher";
 import {exec} from "./utils/exec";
+import {spawn} from "./utils/spawn";
 import {demuxOutput} from "./utils/demuxOutput";
 
 
-type SetOptions = {};
+type EditOptions = {
+    container: string;
+};
 
 type ExecOptions = {
     container?: string;
@@ -36,8 +42,13 @@ export class App {
         this.cli.command("update")
             .action(() => this.update());
 
-        this.cli.command("set <container> <crontab>")
-            .action((options, container, crontab) => this.set(options, container as string, crontab as string));
+        this.cli.command("edit [filename]")
+            .option("container", {
+                type: "string",
+                alias: "c",
+                description: "Container name"
+            })
+            .action((options: EditOptions, filename) => this.edit(options, filename as string));
 
         this.cli.command("exec <...args>")
             .option("container", {
@@ -77,12 +88,7 @@ export class App {
 
             console.log(action, name);
 
-            if(action === "start") {
-                await this.startJobs(name);
-            }
-            else if(action === "stop") {
-                await this.stopJobs(name);
-            }
+            await this.update();
         });
 
         process.on("exit", () => {
@@ -131,15 +137,51 @@ export class App {
         await FS.rm("./crontab.txt");
     }
 
-    protected async set(options: SetOptions, container: string, crontab: string) {
-        const data = await this.getConfig();
+    protected async edit(options: EditOptions, filename: string): Promise<void> {
+        const {
+            container
+        } = options;
 
-        data[container] = crontab;
+        if(!container) {
+            console.log("Required -c=<container>");
+            return;
+        }
 
-        await this.setConfig(data);
-        await this.update();
+        if(process.stdin.isTTY) {
+            const filePath = Path.join(OS.tmpdir(), "ws-crontab.txt");
+            const crontab = await this.getCrontab(container);
 
-        return "";
+            await FS.writeFile(filePath, crontab);
+            await spawn("sensible-editor", [filePath]);
+
+            const res = await FS.readFile(filePath);
+            await FS.rm(filePath);
+
+            if(res.toString() === crontab) {
+                return;
+            }
+
+            await this.setCrontab(container, res.toString());
+            await this.update();
+        }
+        else {
+            const crontab: string = await new Promise((resolve, reject) => {
+                let res = "";
+
+                process.stdin.on("data", (data) => {
+                    res += data.toString();
+                });
+
+                process.stdin.on("end", () => {
+                    resolve(res);
+                });
+
+                process.stdin.on("error", reject);
+            });
+
+            await this.setCrontab(container, crontab);
+            await this.update();
+        }
     }
 
     protected async exec(options: ExecOptions, args: string[]) {
@@ -188,6 +230,21 @@ export class App {
         });
     }
 
+    protected async getCrontab(name: string): Promise<string> {
+        const {
+            [name]: crontab = ""
+        } = await this.getConfig();
+
+        return crontab;
+    }
+
+    protected async setCrontab(name: string, crontab: string): Promise<void> {
+        await this.setConfig({
+            ...await this.getConfig(),
+            [name]: crontab
+        });
+    }
+
     protected async getConfig() {
         if(!existsSync(CONFIG_PATH)) {
             return {};
@@ -211,59 +268,6 @@ export class App {
         }
 
         await FS.writeFile(CONFIG_PATH, JSON.stringify(data, null, 4));
-    }
-
-    protected async startJobs(name: string) {
-        const {
-            [name]: containerCrontab = ""
-        } = await this.getConfig();
-
-        const crontab = Crontab.fromString(await exec("crontab -l").catch(() => ""));
-
-        crontab.filter((job) => {
-            return /^\* \* \* \* \* ws-cron exec echo "[^"]+"$/.test(job.command);
-        }).filter((job) => {
-            return !new RegExp(`ws-cron exec -c=${name}`).test(job.command);
-        });
-
-        const cc = Crontab.fromString(containerCrontab);
-
-        cc.jobs.map((job) => {
-            const command = job.command.replace(/\$/, "\\$");
-
-            job.command = `ws-cron exec -c=${name} ${command} `;
-
-            return job;
-        });
-
-        crontab.jobs.push(...cc.jobs);
-
-        if(crontab.jobs.length === 0) {
-            crontab.push(Job.fromString("* * * * * ws-cron exec echo \"No jobs\""));
-        }
-
-        await FS.writeFile("./crontab.txt", crontab.toString());
-        await exec("crontab ./crontab.txt");
-        await FS.rm("./crontab.txt");
-    }
-
-    protected async stopJobs(name: string) {
-        try {
-            const cron = Crontab.fromString(await exec("crontab -l"));
-
-            cron.filter((job) => !new RegExp(`-c=${name}`).test(job.command));
-
-            if(cron.jobs.length === 0) {
-                cron.push(Job.fromString("* * * * * ws-cron exec echo \"No jobs\""));
-            }
-
-            await FS.writeFile("./crontab.txt", cron.toString());
-            await exec("crontab ./crontab.txt");
-            await FS.rm("./crontab.txt");
-        }
-        catch(err) {
-            console.error(err);
-        }
     }
 
     public async run(args: string[]) {
