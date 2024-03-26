@@ -2,6 +2,7 @@ import {existsSync} from "fs";
 import * as OS from "os";
 import * as Path from "path";
 import {FS} from "@wocker/core";
+import {demuxOutput} from "@wocker/utils";
 import {Cli} from "@kearisp/cli";
 import * as Docker from "dockerode";
 
@@ -12,7 +13,6 @@ import {Logger} from "./makes/Logger";
 import {Watcher} from "./makes/Watcher";
 import {exec} from "./utils/exec";
 import {spawn} from "./utils/spawn";
-import {demuxOutput} from "./utils/demuxOutput";
 
 
 type EditOptions = {
