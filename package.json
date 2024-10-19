@@ -1,6 +1,6 @@
 {
     "name": "@wocker/cron",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "author": "Kris Papercut <krispcut@gmail.com>",
     "description": "Cli tool for cron",
     "license": "MIT",
@@ -25,14 +25,14 @@
     "scripts": {
         "start": "nodemon ./bin/cron.js process",
         "prepare": "npm run build",
-        "watch": "tsc -w",
         "build": "tsc",
+        "watch": "tsc -w",
         "test": "echo \"Error: no test specified\" && exit 1"
     },
     "dependencies": {
-        "@kearisp/cli": "^1.0.6",
-        "@wocker/core": "^1.0.5",
-        "@wocker/utils": "^1.0.3",
+        "@kearisp/cli": "^2.0.5",
+        "@wocker/core": "^1.0.18",
+        "@wocker/utils": "^1.0.7",
         "child_process": "^1.0.2",
         "dockerode": "^4.0.2",
         "fs": "^0.0.1-security",
