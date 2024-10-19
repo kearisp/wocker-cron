@@ -3,7 +3,7 @@ import * as OS from "os";
 import * as Path from "path";
 import {FS} from "@wocker/core";
 import {demuxOutput} from "@wocker/utils";
-import {Cli} from "@kearisp/cli";
+import {Cli, CommandInput} from "@kearisp/cli";
 import * as Docker from "dockerode";
 
 import {DATA_DIR, CONFIG_PATH} from "./env";
@@ -14,14 +14,6 @@ import {Watcher} from "./makes/Watcher";
 import {exec} from "./utils/exec";
 import {spawn} from "./utils/spawn";
 
-
-type EditOptions = {
-    container: string;
-};
-
-type ExecOptions = {
-    container?: string;
-};
 
 export class App {
     protected cli: Cli;
@@ -48,7 +40,7 @@ export class App {
                 alias: "c",
                 description: "Container name"
             })
-            .action((options: EditOptions, filename) => this.edit(options, filename as string));
+            .action((input: CommandInput) => this.edit(input.option("container"), input.argument("filename") as string));
 
         this.cli.command("exec <...args>")
             .option("container", {
@@ -56,7 +48,7 @@ export class App {
                 alias: "c",
                 description: "Container name"
             })
-            .action((options, args) => this.exec(options, args as string[]));
+            .action((input: CommandInput) => this.exec(input.argument("args") as unknown as string[], input.option("container")));
     }
 
     protected async watch() {
@@ -137,11 +129,7 @@ export class App {
         await FS.rm("./crontab.txt");
     }
 
-    protected async edit(options: EditOptions, filename: string): Promise<void> {
-        const {
-            container
-        } = options;
-
+    protected async edit(container: string, filename: string): Promise<void> {
         if(!container) {
             console.log("Required -c=<container>");
             return;
@@ -184,11 +172,7 @@ export class App {
         }
     }
 
-    protected async exec(options: ExecOptions, args: string[]) {
-        const {
-            container: name
-        } = options;
-
+    protected async exec(args: string[], name: string): Promise<void> {
         if(!name) {
             const res = await exec(args.join(" "));
             const data = res.toString()
