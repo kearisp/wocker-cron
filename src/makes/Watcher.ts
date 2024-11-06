@@ -1,7 +1,7 @@
+import {FileSystem} from "@wocker/core";
 import * as Path from "path";
 import {watch} from "fs";
 
-import {FS} from "./FS";
 import {spawn} from "../utils/spawn";
 
 
@@ -12,7 +12,7 @@ class Watcher {
         protected path: string
     ) {}
 
-    public async start() {
+    public async start(): Promise<void> {
         if(this.abortController) {
             this.abortController.abort();
         }
@@ -30,8 +30,9 @@ class Watcher {
         }
     }
 
-    public async watch() {
-        const files = await FS.readdir(this.path, {
+    public async watch(): Promise<void> {
+        const fs = new FileSystem(this.path);
+        const files = await fs.readdirFiles("", {
             recursive: true
         });
 

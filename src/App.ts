@@ -40,7 +40,9 @@ export class App {
                 alias: "c",
                 description: "Container name"
             })
-            .action((input: CommandInput) => this.edit(input.option("container"), input.argument("filename") as string));
+            .action((input: CommandInput) => {
+                return this.edit(input.option("container"), input.argument("filename") as string);
+            });
 
         this.cli.command("exec <...args>")
             .option("container", {
@@ -48,7 +50,9 @@ export class App {
                 alias: "c",
                 description: "Container name"
             })
-            .action((input: CommandInput) => this.exec(input.argument("args") as unknown as string[], input.option("container")));
+            .action((input: CommandInput) => {
+                return this.exec(input.argument("args") as unknown as string[], input.option("container"));
+            });
     }
 
     protected async watch() {
@@ -77,8 +81,6 @@ export class App {
                     }
                 }
             } = JSON.parse(data.toString());
-
-            console.log(action, name);
 
             await this.update();
         });
