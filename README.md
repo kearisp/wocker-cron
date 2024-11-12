@@ -2,6 +2,8 @@
 
 ###### For docker-in-docker container
 
+> ⚠ **Deprecated.** This package is no longer maintained. Starting version 1.0.4, the "[rproxy](https://www.npmjs.com/package/@wocker/cron-plugin)" plugin will work without this package.
+
 
 ## Installation
 

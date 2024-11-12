@@ -3,6 +3,7 @@
 .vscode/
 /.eslintcache
 .DS_Store
+/package-lock.json
 
 # Build configs
 /.env
