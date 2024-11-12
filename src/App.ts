@@ -4,7 +4,7 @@ import * as Path from "path";
 import {FS} from "@wocker/core";
 import {demuxOutput} from "@wocker/utils";
 import {Cli, CommandInput} from "@kearisp/cli";
-import * as Docker from "dockerode";
+import Docker from "dockerode";
 
 import {DATA_DIR, CONFIG_PATH} from "./env";
 import {Crontab} from "./makes/Crontab";
@@ -24,6 +24,9 @@ export class App {
         this.docker = new Docker({
             socketPath: "/var/run/docker.sock"
         });
+
+        this.cli.command("completion")
+            .action(() => this.cli.completionScript());
 
         this.cli.command("watch")
             .action(() => this.watch());
